@@ -1,0 +1,330 @@
+<title>Referral Note Drafter</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  /* Layout: a three-pane clinical workstation (patient list, chart, note) that stacks to one column on a phone. */
+  :root {
+    --bg: #eef1f4; --panel: #fbfcfd; --line: #cdd5dd; --fg: #17212b; --muted: #55636f;
+    --accent: #0f5e7a; --accent-fg: #ffffff; --sel: #dcebf1; --warn: #8a5200; --bad: #a3262b; --ok: #1d6b45;
+    --sans: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #10161b; --panel: #182129; --line: #2e3b46; --fg: #e3e9ee; --muted: #9aa8b4;
+      --accent: #6cc0dc; --accent-fg: #0b1820; --sel: #213744; --warn: #e0a54a; --bad: #f08a8d; --ok: #74c79a;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #10161b; --panel: #182129; --line: #2e3b46; --fg: #e3e9ee; --muted: #9aa8b4;
+    --accent: #6cc0dc; --accent-fg: #0b1820; --sel: #213744; --warn: #e0a54a; --bad: #f08a8d; --ok: #74c79a;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  body { background: var(--bg); color: var(--fg); font: 14px/1.5 var(--sans);
+         padding-block: 16px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+  .top { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 14px; margin-bottom: 14px; }
+  h1 { font-size: 20px; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); font-size: 13px; }
+  .chip { font-size: 12px; padding: 2px 9px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); white-space: nowrap; }
+  .chip.ok { color: var(--ok); border-color: var(--ok); }
+  .chip.warn { color: var(--warn); border-color: var(--warn); }
+  .grid { display: grid; grid-template-columns: 250px minmax(0, 1fr) minmax(0, 1.15fr); gap: 12px; align-items: start; }
+  .pane { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; min-width: 0; display: flex; flex-direction: column; }
+  .pane h2 { margin: 0; padding: 9px 12px; font-size: 11px; font-weight: 600; letter-spacing: 0.07em; text-transform: uppercase; color: var(--muted); border-bottom: 1px solid var(--line); }
+  .inner { padding: 12px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+  .scroll { max-height: 72vh; overflow: auto; }
+  label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  select, input, textarea { width: 100%; font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 6px 8px; }
+  select:focus-visible, input:focus-visible, textarea:focus-visible, button:focus-visible, .pt:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .pts { display: flex; flex-direction: column; gap: 2px; }
+  .pt { text-align: left; background: none; border: 1px solid transparent; border-radius: 4px; padding: 7px 8px; cursor: pointer; font: inherit; color: var(--fg); }
+  .pt:hover { background: var(--sel); }
+  .pt[aria-pressed="true"] { background: var(--sel); border-color: var(--accent); }
+  .pt b { font-weight: 500; display: block; }
+  .pt span { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.55 var(--mono); }
+  #draft { min-height: 340px; resize: vertical; font: 13px/1.55 var(--mono); }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .two { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 10px; }
+  button.act { font: inherit; font-weight: 500; padding: 7px 14px; border-radius: 4px; border: 1px solid var(--accent); background: var(--accent); color: var(--accent-fg); cursor: pointer; }
+  button.ghost { background: transparent; color: var(--accent); }
+  button.act:disabled { opacity: 0.45; cursor: default; }
+  #status { font-size: 12px; color: var(--muted); flex: 1 1 160px; min-width: 0; }
+  #status.bad { color: var(--bad); }
+  .fu { border: 1px solid var(--line); border-radius: 4px; padding: 10px; display: flex; flex-direction: column; gap: 10px; }
+  .fu h3 { margin: 0; font-size: 12px; font-weight: 600; }
+  .fu .q label { color: inherit; font-size: 13px; margin-bottom: 2px; }
+  .fu .q small { display: block; color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+  @media (max-width: 980px) { .grid { grid-template-columns: minmax(0, 1fr); } .scroll { max-height: 46vh; } }
+  @media (max-width: 480px) { .two { grid-template-columns: minmax(0, 1fr); } }
+</style>
+
+<div class="top">
+  <h1>Referral Note Drafter</h1>
+  <span class="sub">Primary care to specialist, drafted from the chart</span>
+  <span id="mode" class="chip">Checking for Claude…</span>
+  <span class="chip">Synthetic Synthea patients · draft needs clinician review</span>
+</div>
+
+<div class="grid">
+  <section class="pane">
+    <h2>Patient</h2>
+    <div class="inner">
+      <div>
+        <label for="condition">Referral condition</label>
+        <select id="condition"></select>
+      </div>
+      <div class="pts scroll" id="patients"></div>
+    </div>
+  </section>
+
+  <section class="pane">
+    <h2>Chart extract sent to the model</h2>
+    <div class="inner scroll"><pre id="extract">Loading patients…</pre></div>
+  </section>
+
+  <section class="pane">
+    <h2 id="noteTitle">Referral note</h2>
+    <div class="inner">
+      <div class="two">
+        <div>
+          <label for="question">Clinical question for the specialist</label>
+          <input id="question" placeholder="Optional. Claude suggests one if left blank.">
+        </div>
+        <div>
+          <label for="urgency">Urgency</label>
+          <select id="urgency"><option>routine</option><option>urgent</option><option>emergent</option></select>
+        </div>
+      </div>
+      <div>
+        <label for="notes">Anything not in the chart (symptoms, exam, patient goals)</label>
+        <textarea id="notes" rows="2"></textarea>
+      </div>
+      <div class="row">
+        <button class="act" id="go" disabled>Draft note</button>
+        <button class="act ghost" id="stop" hidden>Stop</button>
+        <button class="act ghost" id="copy" disabled>Copy</button>
+        <span id="status"></span>
+      </div>
+      <div>
+        <label for="draft">Draft (editable)</label>
+        <textarea id="draft" spellcheck="false"></textarea>
+      </div>
+      <div class="fu" id="followups" hidden>
+        <h3>Follow-up questions to improve this note</h3>
+        <div id="qlist" style="display:flex;flex-direction:column;gap:10px"></div>
+        <div><button class="act" id="update">Update note with answers</button></div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let DATA = null, cond = null, patient = null, sample = null, ctl = null, questions = null;
+
+const ERRORS = {
+  not_granted: "Claude was not allowed for this page, so only the template draft is available.",
+  sampling_disabled: "Claude is not available for this account.",
+  rate_limited: "Usage limit reached. Try again later.",
+  session_expired: "Sign in to Claude again, then retry.",
+  refused: "Claude declined to draft this note.",
+  prompt_too_large: "This chart extract is too large to send.",
+};
+
+function setStatus(text, bad = false) { $('status').textContent = text; $('status').className = bad ? 'bad' : ''; }
+
+function setMode() {
+  $('mode').textContent = sample ? 'Live: drafted by Claude' : 'Template only: Claude unavailable in this view';
+  $('mode').className = 'chip ' + (sample ? 'ok' : 'warn');
+}
+
+function renderQuestions() {
+  const box = $('qlist');
+  box.textContent = '';
+  (questions || []).forEach((q, i) => {
+    const row = document.createElement('div'), label = document.createElement('label'),
+          why = document.createElement('small'), input = document.createElement('input');
+    row.className = 'q';
+    label.htmlFor = input.id = 'ans' + i;
+    label.textContent = q.question;
+    why.textContent = q.why || '';
+    input.placeholder = 'Leave blank if unknown; it stays flagged in the note';
+    row.append(label, why, input);
+    box.append(row);
+  });
+  $('followups').hidden = !(questions && questions.length);
+}
+
+function answers() {
+  return (questions || []).map((q, i) => ({ question: q.question, answer: $('ans' + i).value.trim() }));
+}
+
+function showCondition() {
+  cond = DATA.conditions.find(c => c.key === $('condition').value);
+  $('noteTitle').textContent = 'Referral note to ' + cond.specialty;
+  const box = $('patients');
+  box.textContent = '';
+  cond.patients.forEach((p, i) => {
+    const b = document.createElement('button');
+    b.className = 'pt'; b.type = 'button'; b.setAttribute('aria-pressed', 'false');
+    const name = document.createElement('b'), meta = document.createElement('span');
+    name.textContent = `${p.name}, ${p.age} ${p.sex[0].toUpperCase()}`;
+    meta.textContent = p.headline;
+    b.append(name, meta);
+    b.onclick = () => selectPatient(p, b);
+    box.append(b);
+    if (i === 0) selectPatient(p, b);
+  });
+}
+
+function selectPatient(p, el) {
+  ctl?.abort(); seq++; $('stop').hidden = true;
+  document.querySelectorAll('.pt').forEach(n => n.setAttribute('aria-pressed', 'false'));
+  el.setAttribute('aria-pressed', 'true');
+  patient = p; questions = null; renderQuestions();
+  $('extract').textContent = p.extract;
+  $('draft').value = ''; $('copy').disabled = true; $('go').disabled = false;
+  setStatus('');
+}
+
+function context() {
+  return `<referral_request>
+Referring to: ${cond.specialty}
+Referral condition: ${cond.label}
+Urgency: ${$('urgency').value}
+PCP's clinical question: ${$('question').value.trim() || '(none given)'}
+PCP's additional notes: ${$('notes').value.trim() || '(none given)'}
+</referral_request>
+
+<what_this_specialist_needs>
+${cond.guidance}
+</what_this_specialist_needs>
+
+<chart_extract>
+${patient.extract}
+</chart_extract>`;
+}
+
+let seq = 0;
+
+function draftBlock(draft) { return `<current_draft>\n${draft.trim()}\n</current_draft>`; }
+
+function answersBlock() {
+  return '<pcp_answers_to_follow_up_questions>\n'
+    + answers().map(a => `Q: ${a.question}\nA: ${a.answer || '(not answered)'}`).join('\n')
+    + '\n</pcp_answers_to_follow_up_questions>';
+}
+
+function fail(e) {
+  setStatus(ERRORS[e.code] || 'Claude was interrupted. Try again.', true);
+  if (['not_granted', 'sampling_disabled', 'not_declared', 'capability_disabled'].includes(e.code)) { sample = null; setMode(); }
+}
+
+// Shown when Claude is unavailable in this view; clearly labelled as not model output.
+function templateDraft() {
+  const p = patient, qa = answers();
+  return [
+    '[TEMPLATE DRAFT: Claude is unavailable in this view, so this text is not model output]', '',
+    'REASON FOR REFERRAL',
+    `${p.name}, ${p.age}-year-old ${p.sex}, referred to ${cond.specialty} (${$('urgency').value}) for ${cond.label.toLowerCase()}.`, '',
+    'CLINICAL QUESTION', $('question').value.trim() || '[not provided]', '',
+    'RELEVANT HISTORY', ...p.problems.map(x => '- ' + x),
+    ...qa.filter(a => a.answer).map(a => `- ${a.question} ${a.answer}`), '',
+    'CURRENT MEDICATIONS AND ALLERGIES', ...p.meds.map(x => '- ' + x),
+    'Allergies: ' + (p.allergies.join(', ') || 'none recorded'), '',
+    'KEY RESULTS', ...p.results.map(r => `- ${r[0]}: ${r[1]} (${r[2]})`), '',
+    'TO CONFIRM BEFORE SENDING', ...qa.filter(a => !a.answer).map(a => '- ' + a.question),
+  ].join('\n');
+}
+
+// Draft first. With revise, the current draft and the PCP's answers go back for an updated note.
+async function draftNote(revise = false) {
+  ctl?.abort();
+  const run = ++seq, prior = $('draft').value;
+  if (!sample) {
+    if (!revise) { questions = null; renderQuestions(); }
+    $('draft').value = templateDraft(); $('copy').disabled = false;
+    setStatus('Template draft, not model output');
+    questions = revise ? null : cond.fallback_questions;
+    renderQuestions();
+    return;
+  }
+  const prompt = revise
+    ? `${DATA.system}\n\n${context()}\n\n${draftBlock(prior)}\n\n${answersBlock()}\n\n${DATA.revise_task}`
+    : `${DATA.system}\n\n${context()}\n\nWrite the referral note.`;
+  ctl = new AbortController();
+  $('go').disabled = true; $('copy').disabled = true; $('update').disabled = true; $('stop').hidden = false;
+  if (!revise) { questions = null; renderQuestions(); }
+  $('draft').value = '';
+  setStatus(revise ? 'Updating the note…' : 'Thinking… the first text can take up to a minute');
+  let ok = false;
+  try {
+    const { truncated } = await sample(prompt, {
+      signal: ctl.signal, cache: false,
+      onText: ({ text }) => { $('draft').value = text; setStatus('Writing…'); },
+    });
+    ok = true;
+    setStatus(truncated ? 'The note was cut short at the length limit'
+      : revise ? 'Note updated with your answers. Review before sending.' : 'Drafted by Claude. Review before sending.');
+  } catch (e) {
+    if (run !== seq) return;
+    $('draft').value = revise ? prior : (e.text ?? '');  // a failed update must not lose the note
+    if (e.code === 'cancelled') setStatus('Stopped'); else fail(e);
+  }
+  if (run !== seq) return;
+  $('stop').hidden = true; $('go').disabled = false; $('update').disabled = false;
+  $('copy').disabled = !$('draft').value;
+  if (!ok) return;
+  if (revise) { questions = null; renderQuestions(); }
+  else await askQuestions(run);
+}
+
+// Questions are optional: if this step fails or is stopped, the draft stands as it is.
+async function askQuestions(run) {
+  const summary = $('status').textContent;
+  ctl = new AbortController();
+  $('stop').hidden = false;
+  setStatus(summary + ' Checking for follow-up questions…');
+  let out = null;
+  try {
+    out = await sample.json(`${DATA.questions_system}\n\n${context()}\n\n${draftBlock($('draft').value)}\n\n`
+      + 'Ask your follow-up questions. Reply with only a JSON object of the form '
+      + '{"questions": [{"question": "...", "why": "..."}]}.', { signal: ctl.signal });
+  } catch (e) { /* leave the draft as it is */ }
+  if (run !== seq) return;
+  $('stop').hidden = true;
+  setStatus(summary);
+  if (!out) return;
+  questions = (Array.isArray(out.questions) ? out.questions : [])
+    .filter(q => q && typeof q.question === 'string').slice(0, 4)
+    .map(q => ({ question: q.question, why: typeof q.why === 'string' ? q.why : '' }));
+  renderQuestions();
+  if (questions.length) $('followups').scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+
+$('go').onclick = () => draftNote(false);
+$('update').onclick = () => draftNote(true);
+$('stop').onclick = () => ctl?.abort();
+$('copy').onclick = () => {
+  const done = () => setStatus('Copied');
+  const fallback = () => { $('draft').focus(); $('draft').select(); setStatus('Text selected. Press Ctrl+C or Cmd+C to copy.'); };
+  try { navigator.clipboard.writeText($('draft').value).then(done, fallback); } catch { fallback(); }
+};
+$('condition').onchange = showCondition;
+
+fetch('data.json').then(r => r.json()).then(d => {
+  DATA = d;
+  for (const c of d.conditions) {
+    const o = document.createElement('option');
+    o.value = c.key; o.textContent = `${c.label} (${c.patients.length})`;
+    $('condition').append(o);
+  }
+  showCondition();
+}).catch(() => { $('extract').textContent = 'Could not load the patient data.'; });
+
+(window.claude?.use ? window.claude.use('sample') : Promise.resolve(null))
+  .then(s => { sample = s; setMode(); }, () => setMode());
+</script>

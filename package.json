@@ -1,0 +1,16 @@
+{
+  "name": "referral-notes",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Drafts PCP-to-specialist referral notes from Synthea charts with the Claude API",
+  "scripts": {
+    "postinstall": "node scripts/py.js setup",
+    "setup": "node scripts/py.js setup",
+    "dev": "node scripts/py.js dev",
+    "test": "node tests/tracker.test.js",
+    "build:static": "node scripts/py.js static"
+  },
+  "devDependencies": {
+    "jsdom": "^31.0.1"
+  }
+}

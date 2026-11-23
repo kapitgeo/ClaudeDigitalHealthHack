@@ -1,0 +1,14 @@
+# Secrets
+.env
+
+# Dependencies
+node_modules/
+.venv/
+
+# Generated
+site/
+.cloudflare/
+__pycache__/
+*.pyc
+npm-debug.log*
+.DS_Store

@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Referral Notes</title>
+<style>
+  :root { --bg:#f5f6f8; --panel:#fff; --line:#d9dde3; --text:#1c2430; --muted:#5d6878; --accent:#0b62a8; --warn:#9a5b00; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.45 system-ui, "Segoe UI", sans-serif; color:var(--text); background:var(--bg); }
+  header { display:flex; align-items:center; gap:12px; padding:10px 16px; background:var(--panel); border-bottom:1px solid var(--line); }
+  h1 { font-size:16px; margin:0; }
+  .badge { font-size:12px; padding:2px 8px; border-radius:10px; border:1px solid var(--line); color:var(--muted); }
+  .badge.live { color:#0a6b3a; border-color:#0a6b3a; }
+  .badge.mock { color:var(--warn); border-color:var(--warn); }
+  main { display:grid; grid-template-columns:260px minmax(0,1fr) minmax(0,1.1fr); gap:12px; padding:12px 16px; height:calc(100vh - 46px); }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:6px; display:flex; flex-direction:column; min-height:0; }
+  h2 { font-size:12px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin:0; padding:10px 12px; border-bottom:1px solid var(--line); }
+  .body { padding:10px 12px; overflow:auto; flex:1; min-height:0; }
+  select, input, textarea, button { font:inherit; color:inherit; }
+  select, input, textarea { width:100%; padding:6px 8px; border:1px solid var(--line); border-radius:4px; background:#fff; }
+  label { display:block; font-size:12px; color:var(--muted); margin:10px 0 4px; }
+  label:first-child { margin-top:0; }
+  .patient { padding:8px; border-radius:4px; cursor:pointer; border:1px solid transparent; }
+  .patient:hover { background:#eef3f8; }
+  .patient.sel { background:#e3eef8; border-color:var(--accent); }
+  .patient small { display:block; color:var(--muted); }
+  pre { margin:0; white-space:pre-wrap; font:12px/1.5 ui-monospace, Consolas, monospace; }
+  #draft { flex:1 0 auto; min-height:260px; resize:none; font:13px/1.5 ui-monospace, Consolas, monospace; }
+  .row { display:flex; gap:8px; align-items:center; margin-top:10px; }
+  button { padding:7px 14px; border-radius:4px; border:1px solid var(--accent); background:var(--accent); color:#fff; cursor:pointer; }
+  button.ghost { background:#fff; color:var(--accent); }
+  button:disabled { opacity:.5; cursor:default; }
+  #status { font-size:12px; color:var(--muted); flex:1; }
+  #status.err { color:#a4262c; }
+  .form { display:flex; flex-direction:column; }
+  .fu { border: 1px solid var(--line); border-radius: 4px; padding: 10px; display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
+  .fu h3 { margin: 0; font-size: 12px; font-weight: 600; }
+  .fu .q label { color: inherit; font-size: 13px; margin-bottom: 2px; }
+  .fu .q small { display: block; color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+  @media (max-width: 1000px) { main { grid-template-columns:1fr; height:auto; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Referral note drafting</h1>
+  <span id="mode" class="badge">…</span>
+  <span class="badge">Synthetic patients (Synthea) · draft requires clinician review</span>
+  <a href="/tracker" style="margin-left:auto;color:var(--accent)">Referral tracker</a>
+</header>
+<main>
+  <section>
+    <h2>Patient</h2>
+    <div class="body">
+      <label for="condition">Referral condition</label>
+      <select id="condition"></select>
+      <label>Patients</label>
+      <div id="patients"></div>
+    </div>
+  </section>
+  <section>
+    <h2>Chart extract sent to the model</h2>
+    <div class="body"><pre id="extract">Select a patient.</pre></div>
+  </section>
+  <section>
+    <h2 id="noteTitle">Referral note</h2>
+    <div class="body form">
+      <label for="question">Clinical question for the specialist</label>
+      <input id="question" placeholder="e.g. Is this patient a candidate for an SGLT2 inhibitor?">
+      <label for="urgency">Urgency</label>
+      <select id="urgency"><option>routine</option><option>urgent</option><option>emergent</option></select>
+      <label for="notes">Anything not in the chart (symptoms, exam, patient goals)</label>
+      <textarea id="notes" rows="2"></textarea>
+      <div class="row">
+        <button id="go" disabled>Draft note</button>
+        <button id="copy" class="ghost" disabled>Copy</button>
+        <span id="status"></span>
+      </div>
+      <label for="draft">Draft (editable)</label>
+      <textarea id="draft" spellcheck="false"></textarea>
+      <div class="fu" id="followups" hidden>
+        <h3>Follow-up questions to improve this note</h3>
+        <div id="qlist" style="display:flex;flex-direction:column;gap:10px"></div>
+        <div><button class="act" id="update">Update note with answers</button></div>
+      </div>
+    </div>
+  </section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+let conditions = [], patientId = null, questions = null;
+
+async function getJSON(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
+  return r.json();
+}
+
+function setStatus(text, isError = false) {
+  $('status').textContent = text;
+  $('status').className = isError ? 'err' : '';
+}
+
+function renderQuestions() {
+  const box = $('qlist');
+  box.textContent = '';
+  (questions || []).forEach((q, i) => {
+    const row = document.createElement('div'), label = document.createElement('label'),
+          why = document.createElement('small'), input = document.createElement('input');
+    row.className = 'q';
+    label.htmlFor = input.id = 'ans' + i;
+    label.textContent = q.question;
+    why.textContent = q.why || '';
+    input.placeholder = 'Leave blank if unknown; it stays flagged in the note';
+    row.append(label, why, input);
+    box.append(row);
+  });
+  $('followups').hidden = !(questions && questions.length);
+}
+
+function answers() {
+  return (questions || []).map((q, i) => ({ question: q.question, answer: $('ans' + i).value.trim() }));
+}
+
+async function init() {
+  const h = await getJSON('/api/health');
+  $('mode').textContent = h.mode === 'live' ? `Live · ${h.model}` : 'Mock mode · no API key';
+  $('mode').className = 'badge ' + h.mode;
+  conditions = await getJSON('/api/conditions');
+  $('condition').innerHTML = conditions.map(c =>
+    `<option value="${c.key}">${c.label} (${c.patients})</option>`).join('');
+  $('condition').onchange = loadPatients;
+  await loadPatients();
+}
+
+async function loadPatients() {
+  const key = $('condition').value;
+  const cond = conditions.find(c => c.key === key);
+  $('noteTitle').textContent = `Referral note to ${cond.specialty}`;
+  seq++; patientId = null; $('go').disabled = true; questions = null; renderQuestions();
+  $('extract').textContent = 'Select a patient.';
+  const list = await getJSON(`/api/patients?condition=${key}`);
+  const box = $('patients');
+  box.innerHTML = '';
+  for (const p of list) {
+    const el = document.createElement('div');
+    el.className = 'patient';
+    el.innerHTML = `<b></b><small></small>`;
+    el.querySelector('b').textContent = `${p.name}, ${p.age} ${p.sex[0].toUpperCase()}`;
+    el.querySelector('small').textContent = p.headline;
+    el.onclick = () => selectPatient(p.id, el);
+    box.appendChild(el);
+  }
+}
+
+async function selectPatient(id, el) {
+  document.querySelectorAll('.patient').forEach(n => n.classList.remove('sel'));
+  el.classList.add('sel');
+  seq++; patientId = id; questions = null; renderQuestions();
+  $('draft').value = ''; setStatus('');
+  const data = await getJSON(`/api/patients/${id}/extract?condition=${$('condition').value}`);
+  $('extract').textContent = data.text;
+  $('go').disabled = false;
+}
+
+let seq = 0, drafted = false;
+
+function payload(draft = '', ans = []) {
+  return JSON.stringify({
+    patient_id: patientId, condition: $('condition').value, clinical_question: $('question').value,
+    urgency: $('urgency').value, notes: $('notes').value, draft, answers: ans,
+  });
+}
+
+// Draft first. With revise, the current draft and the PCP's answers go back for an updated note.
+async function draftNote(revise = false) {
+  const run = ++seq, prior = $('draft').value;
+  const body = revise ? payload(prior, answers()) : payload();
+  $('go').disabled = true; $('copy').disabled = true; $('update').disabled = true;
+  if (!revise) { questions = null; renderQuestions(); }
+  $('draft').value = ''; drafted = false; setStatus(revise ? 'Updating the note…' : 'Drafting…');
+  try {
+    const r = await fetch('/api/referrals', {method: 'POST', headers: {'Content-Type': 'application/json'}, body});
+    if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
+    const reader = r.body.getReader(), decoder = new TextDecoder();
+    let buffer = '';
+    for (;;) {
+      const {done, value} = await reader.read();
+      if (done || run !== seq) break;
+      buffer += decoder.decode(value, {stream: true});
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+      for (const line of lines) if (line) handle(JSON.parse(line));
+    }
+  } catch (e) {
+    setStatus(e.message, true);
+  }
+  if (run !== seq) return;
+  if (revise && !drafted) $('draft').value = prior;  // a failed update must not lose the note
+  $('go').disabled = false; $('update').disabled = false;
+  $('copy').disabled = !$('draft').value;
+  if (!drafted) return;
+  if (revise) { questions = null; renderQuestions(); }
+  else await askQuestions(run);
+}
+
+// Questions are optional: if this step fails, the draft stands as it is.
+async function askQuestions(run) {
+  const summary = $('status').textContent;
+  setStatus(summary + ' · checking for follow-up questions…');
+  let found = null;
+  try {
+    const r = await fetch('/api/questions', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: payload($('draft').value)});
+    if (r.ok) found = (await r.json()).questions;
+  } catch (e) { /* leave the draft as it is */ }
+  if (run !== seq) return;
+  setStatus(summary);
+  if (!found) return;
+  questions = found; renderQuestions();
+  if (found.length) $('followups').scrollIntoView({block: 'nearest', behavior: 'smooth'});
+}
+
+function handle(ev) {
+  if (ev.type === 'text') {
+    $('draft').value += ev.text;
+    $('draft').scrollTop = $('draft').scrollHeight;
+  } else if (ev.type === 'error') {
+    setStatus(ev.message, true);
+  } else if (ev.type === 'done') {
+    drafted = true;
+    setStatus(ev.mode === 'mock' ? 'Mock draft (template, not model output)'
+      : `${ev.model} · ${ev.input_tokens} in / ${ev.output_tokens} out` + (ev.truncated ? ' · cut off at token limit' : ''));
+  }
+}
+
+$('go').onclick = () => draftNote(false);
+$('update').onclick = () => draftNote(true);
+$('copy').onclick = async () => { await navigator.clipboard.writeText($('draft').value); setStatus('Copied'); };
+init().catch(e => setStatus(e.message, true));
+</script>
+</body>
+</html>
